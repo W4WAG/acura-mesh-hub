@@ -250,6 +250,10 @@ const server = http.createServer((req, res) => {
     if (url === '/pw/stats') return send(200, pw.stats);
     if (url === '/pw/open') return send(200, pw.openNow());
     if (url === '/pw/world') return send(200, pw.worldSummary(q.get('minutes')));
+    if (url === '/pw/sixm') {
+      if (q.get('format') === 'xml') { res.writeHead(200, { 'Content-Type': 'text/xml; charset=utf-8', 'Access-Control-Allow-Origin': ALLOW_ORIGIN, 'Cache-Control': 'no-store' }); res.end(pw.sixXml(q.get('grid'), q.get('minutes'))); return; }
+      return send(200, pw.sixSummary(q.get('grid'), q.get('minutes')));
+    }
     if (!pw.okSecret(q.get('key') || '')) return send(403, { ok: false, msg: 'bad key' });
     if (url === '/arc/start') return send(200, pw.testStart(q.get('call')));
     if (url === '/arc/data') return send(200, pw.testData(q.get('call')));
