@@ -426,7 +426,7 @@ function startBroker() {
 
 if (require.main === module) {
   startBroker();
-  startLetsMesh();
+// OFF: LetsMesh API needs permission (401).   startLetsMesh();
   require('./pathwatch.js').start();
   server.listen(PORT, () => console.log('ACURA MeshCore Hub listening on', PORT, '(region ' + REGION + ')'));
 }
