@@ -9,6 +9,8 @@
  *  2. ANTENNA TESTS - for the worldwide Antenna Report Card: during a 90-minute test, collect every report
  *     of the ham's callsign plus every report of stations in the 9 grid squares around them.
  *  3. WORLD MAP - a 1% sample of all reports worldwide, tallied into which paths are open on each band.
+ *  4. 6 METERS - every 6 m report worldwide (a light stream), for the 6 Meter Band Alerts page (/pw/sixm)
+ *     and for "6 meters is open from my grid" watches (5+ paths over 500 km within 30 minutes).
  *
  * Environment variables (Railway > Variables)
  *   PW_SECRET   shared key; must match the key in WordPress (required)
@@ -20,6 +22,10 @@ const WP_BASE = (process.env.WP_BASE || 'https://acurahamradio.org').replace(/\/
 const SECRET = process.env.PW_SECRET || '';
 const FEED = 'mqtts://mqtt.pskreporter.info:1884';
 const WORLD_TOPIC = 'pskr/filter/v2raw_1pc/#';
+const SIX_TOPIC = 'pskr/filter/v2/6m/#';
+const SIX_KM = 500;            // a 6 m path counts when it is at least this long
+const SIX_MIN = 5;             // paths needed to call 6 m open
+const SIX_WINDOW = 30 * 60;    // seconds
 const OPEN_WINDOW = 15 * 60;   // look back this far for evidence (seconds)
 const OPEN_MIN = 2;            // distinct station pairs needed to call a path open
 const CLOSE_AFTER = 45 * 60;   // path closes after this long with no evidence
@@ -34,11 +40,26 @@ let byGrid = new Map();      // tx grid (4 char) -> [watch]
 const state = new Map();     // "id|band" -> {hits, open, last}
 const tests = new Map();     // CALL -> {call, created, expires, grid, grids:[], rows:[], keys:Set}
 let world = [];              // [{b, s, r, t}] sampled spots (4-char grids)
+let six = [];                // recent 6 m spots [{t, tx, rx, sl, rl, f, m, snr, km}]
+const sixKeys = new Map();   // dedupe key -> time
+let sixWatches = [];         // watches with tkind 'six'
 let subscribed = new Set();  // topic strings
 let client = null;
 let minuteCount = 0;
 
 function nowS() { return Math.floor(Date.now() / 1000); }
+function g2ll(g) {
+  g = String(g || '').toUpperCase();
+  if (!/^[A-R]{2}[0-9]{2}/.test(g)) return null;
+  let lon = (g.charCodeAt(0) - 65) * 20 - 180 + Number(g[2]) * 2, lat = (g.charCodeAt(1) - 65) * 10 - 90 + Number(g[3]);
+  if (/^[A-X]{2}$/.test(g.slice(4, 6))) { lon += (g.charCodeAt(4) - 65) * (5 / 60) + 2.5 / 60; lat += (g.charCodeAt(5) - 65) * (2.5 / 60) + 1.25 / 60; } else { lon += 1; lat += 0.5; }
+  return [lat, lon];
+}
+function kmBetween(a, b) {
+  const r = Math.PI / 180, dla = (b[0] - a[0]) * r, dlo = (b[1] - a[1]) * r;
+  const h = Math.sin(dla / 2) ** 2 + Math.cos(a[0] * r) * Math.cos(b[0] * r) * Math.sin(dlo / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.min(1, Math.sqrt(h)));
+}
 function okSecret(k) { return !!SECRET && typeof k === 'string' && k === SECRET; }
 
 function neighbors(g) {
@@ -61,7 +82,7 @@ function gridTopic(g) { return 'pskr/filter/v2/+/+/+/+/' + g + '/#'; }
 function callTopic(c) { return 'pskr/filter/v2/+/+/' + c + '/#'; }
 
 function wantedTopics() {
-  const want = new Set([WORLD_TOPIC]);
+  const want = new Set([WORLD_TOPIC, SIX_TOPIC]);
   const grids = new Set(byGrid.keys());
   for (const t of tests.values()) { want.add(callTopic(t.call)); for (const g of t.grids) grids.add(g); }
   [...grids].slice(0, MAX_GRIDS).forEach((g) => want.add(gridTopic(g)));
@@ -73,7 +94,7 @@ function syncSubs() {
   const want = wantedTopics();
   for (const t of subscribed) if (!want.has(t)) { client.unsubscribe(t); subscribed.delete(t); }
   for (const t of want) if (!subscribed.has(t)) { client.subscribe(t, { qos: 0 }); subscribed.add(t); }
-  stats.grids = [...subscribed].filter((t) => t !== WORLD_TOPIC).length;
+  stats.grids = [...subscribed].filter((t) => t !== WORLD_TOPIC && t !== SIX_TOPIC).length;
   stats.tests = tests.size;
 }
 
@@ -94,8 +115,11 @@ async function loadWatches() {
 
 function setWatches(list) {
   watches = list.filter((w) => w && w.id && /^[A-R]{2}[0-9]{2}$/i.test(w.home));
+  for (const w of watches) w.home = w.home.toUpperCase();
+  sixWatches = watches.filter((w) => w.tkind === 'six').map((w) => Object.assign(w, { nb: neighbors(w.home) }));
   const m = new Map();
   for (const w of watches) {
+    if (w.tkind === 'six') continue;
     w.home = w.home.toUpperCase(); w.tval = String(w.tval || '').toUpperCase(); w.band = String(w.band || '');
     for (const g of neighbors(w.home)) { if (!m.has(g)) m.set(g, []); m.get(g).push(w); }
   }
@@ -146,6 +170,51 @@ function openNow() {
     out.push({ id: Number(id), band, last: st.last, tx: last && last.tx, rx: last && last.rx, txg: last && last.txg, rxg: last && last.rxg, snr: last && last.snr });
   }
   return out;
+}
+
+/* ---------------- 6 meters ---------------- */
+
+function sixAdd(sp) {
+  const k = sp.tx + '|' + sp.rx + '|' + sp.t;
+  if (sixKeys.has(k)) return;
+  const now = nowS(); sixKeys.set(k, now);
+  const a = g2ll(sp.sl), b = g2ll(sp.rl);
+  const km = a && b ? Math.round(kmBetween(a, b)) : 0;
+  const rec = { t: sp.t, tx: sp.tx, rx: sp.rx, sl: String(sp.sl).slice(0, 6), rl: String(sp.rl).slice(0, 6), f: sp.f, m: sp.mode, snr: sp.snr, km };
+  six.push(rec);
+  if (six.length > 20000) six = six.slice(-15000);
+  if (km < SIX_KM || !sixWatches.length) return;
+  const txg = rec.sl.slice(0, 4).toUpperCase(), rxg = rec.rl.slice(0, 4).toUpperCase();
+  for (const w of sixWatches) {
+    if (w.nb.indexOf(txg) < 0 && w.nb.indexOf(rxg) < 0) continue;
+    const key = w.id + '|6m';
+    let st = state.get(key);
+    if (!st) { st = { hits: [], open: false, last: 0 }; state.set(key, st); }
+    const ev = { t: now, tx: rec.tx, rx: rec.rx, txg, rxg: rec.rl, snr: rec.snr, mode: rec.m, k: rec.tx + '>' + rec.rx };
+    st.hits.push(ev); st.last = now;
+    st.hits = st.hits.filter((h) => now - h.t <= SIX_WINDOW).slice(-80);
+    const pairs = new Set(st.hits.map((h) => h.k));
+    if (!st.open && pairs.size >= SIX_MIN) { st.open = true; report(w, '6m', ev, pairs.size); }
+  }
+}
+
+/* 6 m reports involving one 4-character grid (as sender or listener), like PSKReporter's own grid query. */
+function sixFor(grid, minutes) {
+  grid = String(grid || '').toUpperCase().slice(0, 4);
+  if (!/^[A-R]{2}[0-9]{2}$/.test(grid)) return [];
+  const since = nowS() - Math.max(5, Math.min(60, Number(minutes) || 30)) * 60;
+  return six.filter((x) => x.t >= since && (x.sl.slice(0, 4).toUpperCase() === grid || x.rl.slice(0, 4).toUpperCase() === grid));
+}
+function sixXml(grid, minutes) {
+  const esc = (v) => String(v == null ? '' : v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const rows = sixFor(grid, minutes).map((x) => '<receptionReport receiverCallsign="' + esc(x.rx) + '" receiverLocator="' + esc(x.rl) + '" senderCallsign="' + esc(x.tx) + '" senderLocator="' + esc(x.sl) + '" frequency="' + esc(x.f) + '" flowStartSeconds="' + esc(x.t) + '" mode="' + esc(x.m) + '" sNR="' + esc(x.snr) + '"/>');
+  return '<?xml version="1.0"?>\n<receptionReports source="ACURA hub (mqtt.pskreporter.info)">\n' + rows.join('\n') + '\n</receptionReports>\n';
+}
+function sixSummary(grid, minutes) {
+  const rows = sixFor(grid, minutes); const pairs = new Map();
+  for (const x of rows) if (x.km >= SIX_KM) { const k = x.tx + '>' + x.rx; const e = pairs.get(k); if (!e || e.t < x.t) pairs.set(k, x); }
+  const long = [...pairs.values()].sort((a, b) => b.t - a.t);
+  return { grid: String(grid || '').toUpperCase().slice(0, 4), minutes: Number(minutes) || 30, spots: rows.length, paths: long.length, open: long.length >= SIX_MIN, possible: long.length > 0 && long.length < SIX_MIN, best: long.reduce((m, x) => Math.max(m, x.km), 0), list: long.slice(0, 40) };
 }
 
 /* ---------------- Antenna tests ---------------- */
@@ -227,9 +296,10 @@ function onMessage(topicStr, payload) {
     tx: String(s.sc || p[5] || '').toUpperCase(), rx: String(s.rc || p[6] || '').toUpperCase(),
     txg: String(p[7] || s.sl || '').slice(0, 4).toUpperCase(),
     sl: String(s.sl || p[7] || ''), rl: String(s.rl || p[8] || ''),
-    ra: s.ra != null ? s.ra : p[10], snr: Number(s.rp), t: Number(s.t_tx || s.t) || nowS(),
+    ra: s.ra != null ? s.ra : p[10], snr: Number(s.rp), t: Number(s.t_tx || s.t) || nowS(), f: Number(s.f) || 0,
   };
   if (!sp.band) return;
+  if (sp.band === '6m') sixAdd(sp);
   pathWatch(sp);
   antennaTests(sp);
 }
@@ -244,6 +314,8 @@ function sweep() {
   for (const [c, t] of tests) if (t.expires < now) { tests.delete(c); changed = true; }
   if (changed) syncSubs();
   const cut = now - 3600; if (world.length && world[0].t < cut) world = world.filter((x) => x.t >= cut);
+  if (six.length && six[0].t < cut) six = six.filter((x) => x.t >= cut);
+  for (const [k, t] of sixKeys) if (t < cut) sixKeys.delete(k);
   stats.perMin = minuteCount; minuteCount = 0;
 }
 
@@ -260,5 +332,5 @@ function start() {
   setInterval(sweep, 60 * 1000).unref();
 }
 
-module.exports = { start, stats, openNow, neighbors, okSecret, testStart, testData, worldSummary,
-  _test: { onMessage, targetMatch, setWatches, state, tests, syncSubs, wantedTopics } };
+module.exports = { start, stats, openNow, neighbors, okSecret, testStart, testData, worldSummary, sixXml, sixSummary,
+  _test: { onMessage, targetMatch, setWatches, state, tests, syncSubs, wantedTopics, sixFor } };
