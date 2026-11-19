@@ -14,6 +14,9 @@
  *   GET  /arc/start, /arc/data    worldwide Antenna Report Card tests (key required)
  *   GET  /                        health check
  *
+ * Also polls LetsMesh (api.letsmesh.net) for the region, so the page has data
+ * from every LetsMesh observer in the region even before any observer sends here.
+ *
  * Environment variables (set in Railway > Variables)
  *   HUB_USER        username observers use to connect   (required)
  *   HUB_PASS        password observers use to connect   (required)
@@ -166,6 +169,109 @@ function prune() {
 }
 setInterval(prune, 10 * 60 * 1000).unref();
 
+/* ---------------- LetsMesh feed ----------------
+ * LetsMesh (letsmesh.net) publishes the packets every observer in a region hears.
+ * The hub polls it for our region so the website works even before an observer
+ * sends to the hub directly. Packets heard both ways are counted once (by hash).
+ */
+const LM_API = 'https://api.letsmesh.net/api';
+const lmSeen = new Map(); // LetsMesh reception id -> time
+let lmStatus = { ok: false, last: 0, err: '' };
+
+function lmTime(s) { const t = Date.parse(s); return Number.isFinite(t) ? Math.floor(t / 1000) : Math.floor(Date.now() / 1000); }
+
+async function lmGet(path) {
+  const r = await fetch(LM_API + path, { headers: { 'User-Agent': 'ACURA-MeshCore-Hub (acurahamradio.org)' }, signal: AbortSignal.timeout(20000) });
+  if (!r.ok) throw new Error('LetsMesh ' + path.split('?')[0] + ' HTTP ' + r.status);
+  return r.json();
+}
+
+function lmIngest(p) {
+  const t = lmTime(p.heard_at);
+  const hash = String(p.hash || '').toUpperCase() || ('LM' + p.id);
+  const origin = String(p.origin || 'observer').slice(0, 60);
+  const path = Array.isArray(p.path) ? p.path.map((x) => String(x).toLowerCase()) : [];
+  const ty = String(p.payload_type || 'Other');
+  const rec = { t, h: hash, ty, rt: String(p.route_type || ''), pa: path, o: origin, snr: num(p.snr) };
+  packets.push(rec);
+
+  const ob = observers.get(origin) || { last: 0, m: '', on: true, c: 0 };
+  if (t > ob.last) ob.last = t;
+  ob.c++;
+  observers.set(origin, ob);
+
+  if (!seenHashes.has(hash)) {
+    seenHashes.set(hash, t);
+    const k = hourKey(t);
+    const row = hours.get(k) || { n: 0, ty: {}, rp: {} };
+    row.n++;
+    row.ty[ty] = (row.ty[ty] || 0) + 1;
+    for (const x of new Set(path)) row.rp[x] = (row.rp[x] || 0) + 1;
+    hours.set(k, row);
+  }
+}
+
+async function lmPackets() {
+  const list = await lmGet('/packets/filtered?region=' + encodeURIComponent(REGION) + '&limit=500');
+  if (!Array.isArray(list)) return;
+  const fresh = list.filter((p) => p && p.id && !lmSeen.has(String(p.id)));
+  fresh.sort((a, b) => lmTime(a.heard_at) - lmTime(b.heard_at));
+  for (const p of fresh) { lmSeen.set(String(p.id), lmTime(p.heard_at)); lmIngest(p); }
+  packets.sort((a, b) => a.t - b.t);
+  if (packets.length > 1500) packets.splice(0, packets.length - 1500);
+  const cut = Math.floor(Date.now() / 1000) - 7200;
+  for (const [id, t] of lmSeen) if (t < cut) lmSeen.delete(id);
+}
+
+async function lmNodes() {
+  const j = await lmGet('/nodes?region=' + encodeURIComponent(REGION));
+  const list = (j && j.nodes) || (Array.isArray(j) ? j : []);
+  for (const x of list) {
+    if (!x || !x.public_key) continue;
+    const pk = String(x.public_key).toUpperCase();
+    const ls = lmTime(x.last_seen);
+    const n = nodes.get(pk) || { n: '', r: x.device_role, lat: null, lon: null, ls: 0 };
+    if (ls < n.ls) continue; // the hub already has something newer
+    if (x.name) n.n = String(x.name).slice(0, 40);
+    n.r = parseInt(x.device_role, 10) || n.r;
+    n.ls = ls;
+    const d = x.decoded_payload || {};
+    const lat = num(d.lat), lon = num(d.lon);
+    if (lat !== null && lon !== null && !(lat === 0 && lon === 0)) { n.lat = lat; n.lon = lon; }
+    nodes.set(pk, n);
+  }
+}
+
+async function lmObservers() {
+  const list = await lmGet('/observers');
+  if (!Array.isArray(list)) return;
+  for (const x of list) {
+    if (!x || !x.name) continue;
+    const reg = x.region;
+    const inRegion = Array.isArray(reg) ? reg.includes(REGION) : String(reg || '').split(/[,\s]+/).includes(REGION);
+    if (!inRegion) continue;
+    const name = String(x.name).slice(0, 60);
+    const ob = observers.get(name) || { last: 0, m: '', on: false, c: 0 };
+    ob.on = !!x.is_mqtt_connected;
+    if (x.model) ob.m = String(x.model).slice(0, 40);
+    const lp = x.last_packet_ingested ? lmTime(x.last_packet_ingested) : 0;
+    if (lp > ob.last) ob.last = lp;
+    observers.set(name, ob);
+  }
+}
+
+function startLetsMesh() {
+  const run = async (fn, label) => {
+    try { await fn(); lmStatus = { ok: true, last: Math.floor(Date.now() / 1000), err: '' }; }
+    catch (e) { lmStatus.err = label + ': ' + e.message; console.error('LetsMesh', label, e.message); }
+  };
+  const tick = async () => { await run(lmPackets, 'packets'); };
+  (async () => { await run(lmNodes, 'nodes'); await run(lmObservers, 'observers'); await tick(); })();
+  setInterval(tick, 60 * 1000).unref();
+  setInterval(() => run(lmObservers, 'observers'), 2 * 60 * 1000).unref();
+  setInterval(() => run(lmNodes, 'nodes'), 10 * 60 * 1000).unref();
+}
+
 /* ---------------- /live summary ---------------- */
 
 function prefixNames() {
@@ -227,7 +333,7 @@ function live() {
     }
   }
 
-  return { region: REGION, now, since: startedAt, tick, lastHour, tot24, hours: hrs, types, top, obs, nodes: map, cnt };
+  return { region: REGION, now, since: startedAt, source: lmStatus.ok ? 'hub+letsmesh' : 'hub', tick, lastHour, tot24, hours: hrs, types, top, obs, nodes: map, cnt };
 }
 
 /* ---------------- HTTP server ---------------- */
@@ -261,7 +367,7 @@ const server = http.createServer((req, res) => {
   }
   if (url === '/' || url === '/health') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('ACURA MeshCore Hub is running. Observers: ' + observers.size + '. Packets buffered: ' + packets.length + '.\n');
+    res.end('ACURA MeshCore Hub is running. Observers: ' + observers.size + '. Packets buffered: ' + packets.length + '. LetsMesh feed: ' + (lmStatus.ok ? 'OK' : 'not yet') + (lmStatus.err ? ' (' + lmStatus.err + ')' : '') + '.\n');
     return;
   }
   res.writeHead(404, { 'Content-Type': 'text/plain' });
@@ -320,8 +426,9 @@ function startBroker() {
 
 if (require.main === module) {
   startBroker();
+  startLetsMesh();
   require('./pathwatch.js').start();
   server.listen(PORT, () => console.log('ACURA MeshCore Hub listening on', PORT, '(region ' + REGION + ')'));
 }
 
-module.exports = { decodeRaw, decodeAdvert, handleMessage, live };
+module.exports = { decodeRaw, decodeAdvert, handleMessage, live, lmPackets, lmNodes, lmObservers };
