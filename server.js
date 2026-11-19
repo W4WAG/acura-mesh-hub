@@ -10,6 +10,8 @@
  *   wss://<railway-domain>/mqtt   MQTT over WebSocket (observers connect here)
  *   tcp  <railway-tcp-proxy>      plain MQTT on port 1883 (optional, Railway TCP proxy)
  *   GET  /live                    JSON summary for the website
+ *   GET  /pw/stats, /pw/open, /pw/world   Path Watch status and world map (see pathwatch.js)
+ *   GET  /arc/start, /arc/data    worldwide Antenna Report Card tests (key required)
  *   GET  /                        health check
  *
  * Environment variables (set in Railway > Variables)
@@ -241,6 +243,18 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify(live()));
     return;
   }
+  if (url.indexOf('/pw/') === 0 || url.indexOf('/arc/') === 0) {
+    const pw = require('./pathwatch.js');
+    const q = new URL(req.url || '/', 'http://x').searchParams;
+    const send = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': ALLOW_ORIGIN, 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
+    if (url === '/pw/stats') return send(200, pw.stats);
+    if (url === '/pw/open') return send(200, pw.openNow());
+    if (url === '/pw/world') return send(200, pw.worldSummary(q.get('minutes')));
+    if (!pw.okSecret(q.get('key') || '')) return send(403, { ok: false, msg: 'bad key' });
+    if (url === '/arc/start') return send(200, pw.testStart(q.get('call')));
+    if (url === '/arc/data') return send(200, pw.testData(q.get('call')));
+    return send(404, { ok: false });
+  }
   if (url === '/' || url === '/health') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('ACURA MeshCore Hub is running. Observers: ' + observers.size + '. Packets buffered: ' + packets.length + '.\n');
@@ -302,6 +316,7 @@ function startBroker() {
 
 if (require.main === module) {
   startBroker();
+  require('./pathwatch.js').start();
   server.listen(PORT, () => console.log('ACURA MeshCore Hub listening on', PORT, '(region ' + REGION + ')'));
 }
 
