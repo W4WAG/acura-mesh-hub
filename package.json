@@ -1,0 +1,17 @@
+{
+  "name": "acura-mesh-hub",
+  "version": "1.0.0",
+  "description": "ACURA MeshCore Hub - MQTT broker for MeshCore observers plus a live JSON summary for acurahamradio.org",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": "20.x"
+  },
+  "dependencies": {
+    "aedes": "^0.51.3",
+    "ws": "^8.18.0"
+  },
+  "license": "MIT"
+}
