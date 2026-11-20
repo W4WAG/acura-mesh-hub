@@ -194,7 +194,7 @@ function startJob(k, opt) {
 
   job.log = [];
   const log = (m) => { if (job.log.length < 40) job.log.push(((Date.now() - job.created) / 1000).toFixed(1) + ' ' + String(m).slice(0, 160)); };
-  const paths = ['/kiwi/' + Math.floor(Date.now() / 1000) + '/SND', '/' + Math.floor(Date.now() / 1000) + '/SND', '/ws/kiwi/' + Math.floor(Date.now() / 1000) + '/SND'];
+  const paths = ['/' + Math.floor(Date.now() / 1000) + '/SND', '/kiwi/' + Math.floor(Date.now() / 1000) + '/SND', '/ws/kiwi/' + Math.floor(Date.now() / 1000) + '/SND'];
   let ws = null, ka = null, endT = null, adpcm = null, attempt = Math.min(2, Math.max(0, parseInt(opt.p || '0', 10) || 0)), waitT = null;
 
   const send = (m) => { try { ws.send(m); } catch (e) { /* closed */ } };
@@ -217,7 +217,7 @@ function startJob(k, opt) {
 
     me.on('open', () => {
       log('open'); openWf();
-      send('SERVER DE CLIENT ACURA_Signal_Doctor SND'); send('SET auth t=kiwi p=');
+      send('SET auth t=kiwi p=');
       send('SET ident_user=ACURA_Signal_Doctor_' + String(opt.call || '').replace(/[^A-Z0-9]/gi, '').slice(0, 10));
       send('SET mod=' + mod + ' low_cut=' + lc + ' high_cut=' + hc + ' freq=' + tuneK.toFixed(3));
       send('SET agc=1 hang=0 thresh=-110 slope=6 decay=1000 manGain=50');
@@ -290,7 +290,7 @@ function startJob(k, opt) {
     const wsend = (m) => { try { w.send(m); } catch (e) { /* closed */ } };
     w.on('open', () => {
       log('wf open');
-      wsend('SERVER DE CLIENT ACURA_Signal_Doctor W/F'); wsend('SET auth t=kiwi p=');
+      wsend('SET auth t=kiwi p=');
       wsend('SET zoom=0 cf=' + (k.hi / 2000).toFixed(3));
       wsend('SET maxdb=0 mindb=-100');
       wsend('SET wf_speed=1');
