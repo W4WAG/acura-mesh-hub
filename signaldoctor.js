@@ -237,7 +237,7 @@ function startJob(k, opt) {
         for (const kv of str.split(' ')) {
           const [key, val] = kv.split('=');
           if (key === 'audio_rate') send('SET AR OK in=' + parseInt(val, 10) + ' out=44100');
-          else if (key === 'sample_rate') { const v = parseFloat(val); if (v > 1000) job.fs = v; }
+          else if (key === 'sample_rate') { const v = parseFloat(val); if (v > 1000) job.fs = v; send('SET squelch=0 max=0'); send('SET lms_autonotch=0'); send('SET genattn=0'); send('SET gen=0 mix=-1'); send('SET mod=' + mod + ' low_cut=' + lc + ' high_cut=' + hc + ' freq=' + tuneK.toFixed(3)); send('SET agc=1 hang=0 thresh=-110 slope=6 decay=1000 manGain=50'); send('SET compression=0'); send('SET keepalive'); }
           else if (key === 'too_busy' && parseInt(val, 10) > 0) finish('error', 'That receiver is full right now. Pick another one.');
           else if (key === 'badp' && val !== '0') finish('error', 'That receiver needs a password. Pick another one.');
           else if (key === 'down' && val !== '0') finish('error', 'That receiver is down right now. Pick another one.');
