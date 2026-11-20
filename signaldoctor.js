@@ -204,6 +204,7 @@ function startJob(k, opt) {
     log('finish ' + state + ' ' + (msg || ''));
     clearInterval(ka); clearTimeout(endT); clearTimeout(waitT);
     try { ws.close(); } catch (e) { /* ignore */ }
+    try { if (wf) wf.close(); } catch (e) { /* ignore */ }
   };
 
   function connect() {
@@ -215,7 +216,7 @@ function startJob(k, opt) {
     ws = me; job.ws = me;
 
     me.on('open', () => {
-      log('open');
+      log('open'); openWf();
       send('SET auth t=kiwi p=');
       send('SET ident_user=ACURA_Signal_Doctor_' + String(opt.call || '').replace(/[^A-Z0-9]/gi, '').slice(0, 10));
       send('SET mod=' + mod + ' low_cut=' + lc + ' high_cut=' + hc + ' freq=' + tuneK.toFixed(3));
@@ -275,6 +276,30 @@ function startJob(k, opt) {
       if (job.state === 'recording') finish(job.nsamp > job.fs * 8 ? 'done' : 'error', job.nsamp > job.fs * 8 ? '' : 'The receiver hung up early. Pick another one.');
       else if (job.state === 'connecting') retry('The receiver closed the connection. Pick another one.');
     });
+  }
+
+  let wf = null;
+  function openWf() {
+    // A real listener has a waterfall open next to the audio. Open a slow, small one so the receiver treats us like a normal visitor.
+    try { if (wf) wf.close(); } catch (e) { /* ignore */ }
+    const wurl = 'ws://' + k.host + ':' + k.port + paths[attempt].replace(/\/SND$/, '/W/F');
+    let w;
+    try { w = new WebSocket(wurl, { handshakeTimeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0 (ACURA Signal Doctor; acurahamradio.org)' } }); }
+    catch (e) { log('wf ctor ' + e.message); return; }
+    wf = w;
+    const wsend = (m) => { try { w.send(m); } catch (e) { /* closed */ } };
+    w.on('open', () => {
+      log('wf open');
+      wsend('SET auth t=kiwi p=');
+      wsend('SET zoom=0 cf=' + (k.hi / 2000).toFixed(3));
+      wsend('SET maxdb=0 mindb=-100');
+      wsend('SET wf_speed=1');
+      wsend('SET wf_comp=1');
+      w.kaT = setInterval(() => wsend('SET keepalive'), 1000);
+    });
+    w.on('message', () => { /* waterfall data is not needed */ });
+    w.on('error', (e) => log('wf error ' + e.message));
+    w.on('close', (c) => { clearInterval(w.kaT); log('wf close ' + c); });
   }
 
   function retry(msg) {
