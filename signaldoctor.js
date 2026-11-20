@@ -1,11 +1,4 @@
-  const paths = ['/kiwi/' + Math.floor(Date.now() / 1000) + '/SND', '/' + Math.floor(Date.now() / 1000) + '/SND', '/ws/kiwi/' + Math.floor(Date.now() / 1000) + '/SND'];    try { me = new WebSocket(url, { handshakeTimeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0 (ACURA Signal Doctor; acurahamradio.org)', Origin: 'http://' + k.host + (k.port === 80 ? '' : ':' + k.port) } }); }    try { w = new WebSocket(wurl, { handshakeTimeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0 (ACURA Signal Doctor; acurahamradio.org)', Origin: 'http://' + k.host + (k.port === 80 ? '' : ':' + k.port) } }); }  const paths = ['/kiwi/' + Math.floor(Date.now() / 1000) + '/SND', '/' + Math.floor(Date.now() / 1000) + '/SND', '/ws/kiwi/' + Math.floor(Date.now() / 1000) + '/SND'];    try { me = new WebSocket(url, { handshakeTimeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0 (ACURA Signal Doctor; acurahamradio.org)', Origin: 'http://' + k.host + (k.port === 80 ? '' : ':' + k.port) } }); }    try { w = new WebSocket(wurl, { handshakeTimeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0 (ACURA Signal Doctor; acurahamradio.org)', Origin: 'http://' + k.host + (k.port === 80 ? '' : ':' + k.port) } }); }    job.state = state; if (msg) job.msg = msg;
-    noteHost(k.host + ':' + k.port, state === 'done');const ipLog = new Map();
-const hostStats = new Map(); // host:port -> {ok, bad, t} so receivers that keep failing sink down the list
-function noteHost(h, ok) { const s = hostStats.get(h) || { ok: 0, bad: 0, t: 0 }; if (ok) s.ok++; else s.bad++; s.t = Date.now(); hostStats.set(h, s); }    let hs = hostStats.get(k.host + ':' + k.port);
-    if (hs && Date.now() - hs.t > 12 * 3600 * 1000) { hostStats.delete(k.host + ':' + k.port); hs = null; }
-    if (hs && hs.bad >= 2 && hs.ok === 0) continue;
-    const rel = hs ? hs.ok * 12 - hs.bad * 20 : 0;
-    c.push({ name: k.name, url: 'http://' + k.host + ':' + k.port, km: Math.round(d), deg: Math.round(bearing(lat, lon, k.lat, k.lon)), free: k.max - k.users, snr, score: snr * 3 - distPenalty + rel, worked: hs ? hs.ok : 0 });/*
+/*
  * ACURA Signal Doctor - recorder
  * ------------------------------
  * Records a ham's own transmission on a public KiwiSDR receiver far away, so
@@ -39,6 +32,8 @@ const PER_HOUR = 12;
 let kiwiCache = { t: 0, list: [], src: '', err: '' };
 const jobs = new Map();
 const ipLog = new Map();
+const hostStats = new Map(); // host:port -> {ok, bad, t} so receivers that keep failing sink down the list
+function noteHost(h, ok) { const s = hostStats.get(h) || { ok: 0, bad: 0, t: 0 }; if (ok) s.ok++; else s.bad++; s.t = Date.now(); hostStats.set(h, s); }
 
 /* ---------------- receiver list ---------------- */
 
@@ -144,7 +139,11 @@ async function nearby(lat, lon, fkhz) {
     // Best skywave distance for a quick test is roughly 400-1300 km; prefer receivers with a good SNR score.
     const distPenalty = d < 400 ? (400 - d) / 4 : d > 1300 ? (d - 1300) / 8 : 0;
     const snr = k.snr.length ? Math.max(...k.snr) : 15;
-    c.push({ name: k.name, url: 'http://' + k.host + ':' + k.port, km: Math.round(d), deg: Math.round(bearing(lat, lon, k.lat, k.lon)), free: k.max - k.users, snr, score: snr * 3 - distPenalty });
+    let hs = hostStats.get(k.host + ':' + k.port);
+    if (hs && Date.now() - hs.t > 12 * 3600 * 1000) { hostStats.delete(k.host + ':' + k.port); hs = null; }
+    if (hs && hs.bad >= 2 && hs.ok === 0) continue;
+    const rel = hs ? hs.ok * 12 - hs.bad * 20 : 0;
+    c.push({ name: k.name, url: 'http://' + k.host + ':' + k.port, km: Math.round(d), deg: Math.round(bearing(lat, lon, k.lat, k.lon)), free: k.max - k.users, snr, score: snr * 3 - distPenalty + rel, worked: hs ? hs.ok : 0 });
   }
   c.sort((a, b) => b.score - a.score);
   return c.slice(0, 10);
@@ -201,13 +200,14 @@ function startJob(k, opt) {
 
   job.log = [];
   const log = (m) => { if (job.log.length < 40) job.log.push(((Date.now() - job.created) / 1000).toFixed(1) + ' ' + String(m).slice(0, 160)); };
-  const paths = ['/' + Math.floor(Date.now() / 1000) + '/SND', '/kiwi/' + Math.floor(Date.now() / 1000) + '/SND', '/ws/kiwi/' + Math.floor(Date.now() / 1000) + '/SND'];
+  const paths = ['/kiwi/' + Math.floor(Date.now() / 1000) + '/SND', '/' + Math.floor(Date.now() / 1000) + '/SND', '/ws/kiwi/' + Math.floor(Date.now() / 1000) + '/SND'];
   let ws = null, ka = null, endT = null, adpcm = null, attempt = Math.min(2, Math.max(0, parseInt(opt.p || '0', 10) || 0)), waitT = null;
 
   const send = (m) => { try { ws.send(m); } catch (e) { /* closed */ } };
   const finish = (state, msg) => {
     if (job.state === 'done' || job.state === 'error') return;
     job.state = state; if (msg) job.msg = msg;
+    noteHost(k.host + ':' + k.port, state === 'done');
     log('finish ' + state + ' ' + (msg || ''));
     clearInterval(ka); clearTimeout(endT); clearTimeout(waitT);
     try { ws.close(); } catch (e) { /* ignore */ }
@@ -218,7 +218,7 @@ function startJob(k, opt) {
     const url = 'ws://' + k.host + ':' + k.port + paths[attempt];
     log('connect ' + paths[attempt].replace(/\d{6,}/, 'T'));
     let me;
-    try { me = new WebSocket(url, { handshakeTimeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0 (ACURA Signal Doctor; acurahamradio.org)' } }); }
+    try { me = new WebSocket(url, { handshakeTimeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0 (ACURA Signal Doctor; acurahamradio.org)', Origin: 'http://' + k.host + (k.port === 80 ? '' : ':' + k.port) } }); }
     catch (e) { log('ctor ' + e.message); return retry('Could not reach that receiver.'); }
     ws = me; job.ws = me;
 
@@ -291,7 +291,7 @@ function startJob(k, opt) {
     try { if (wf) wf.close(); } catch (e) { /* ignore */ }
     const wurl = 'ws://' + k.host + ':' + k.port + paths[attempt].replace(/\/SND$/, '/W/F');
     let w;
-    try { w = new WebSocket(wurl, { handshakeTimeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0 (ACURA Signal Doctor; acurahamradio.org)' } }); }
+    try { w = new WebSocket(wurl, { handshakeTimeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0 (ACURA Signal Doctor; acurahamradio.org)', Origin: 'http://' + k.host + (k.port === 80 ? '' : ':' + k.port) } }); }
     catch (e) { log('wf ctor ' + e.message); return; }
     wf = w;
     const wsend = (m) => { try { w.send(m); } catch (e) { /* closed */ } };
