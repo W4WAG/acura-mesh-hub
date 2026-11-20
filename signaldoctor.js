@@ -194,7 +194,7 @@ function startJob(k, opt) {
 
   job.log = [];
   const log = (m) => { if (job.log.length < 40) job.log.push(((Date.now() - job.created) / 1000).toFixed(1) + ' ' + String(m).slice(0, 160)); };
-  const paths = ['/' + Math.floor(Date.now() / 1000) + '/SND', '/ws/kiwi/' + Math.floor(Date.now() / 1000) + '/SND'];
+  const paths = ['/ws/kiwi/' + Math.floor(Date.now() / 1000) + '/SND', '/' + Math.floor(Date.now() / 1000) + '/SND'];
   let ws = null, ka = null, endT = null, adpcm = null, attempt = 0, waitT = null;
 
   const send = (m) => { try { ws.send(m); } catch (e) { /* closed */ } };
@@ -238,9 +238,9 @@ function startJob(k, opt) {
           const [key, val] = kv.split('=');
           if (key === 'audio_rate') send('SET AR OK in=' + parseInt(val, 10) + ' out=44100');
           else if (key === 'sample_rate') { const v = parseFloat(val); if (v > 1000) job.fs = v; }
-          else if (key === 'too_busy') finish('error', 'That receiver is full right now. Pick another one.');
+          else if (key === 'too_busy' && parseInt(val, 10) > 0) finish('error', 'That receiver is full right now. Pick another one.');
           else if (key === 'badp' && val !== '0') finish('error', 'That receiver needs a password. Pick another one.');
-          else if (key === 'down') finish('error', 'That receiver is down right now. Pick another one.');
+          else if (key === 'down' && val !== '0') finish('error', 'That receiver is down right now. Pick another one.');
         }
         return;
       }
