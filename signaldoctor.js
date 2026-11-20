@@ -1,4 +1,11 @@
-/*
+  const paths = ['/kiwi/' + Math.floor(Date.now() / 1000) + '/SND', '/' + Math.floor(Date.now() / 1000) + '/SND', '/ws/kiwi/' + Math.floor(Date.now() / 1000) + '/SND'];    try { me = new WebSocket(url, { handshakeTimeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0 (ACURA Signal Doctor; acurahamradio.org)', Origin: 'http://' + k.host + (k.port === 80 ? '' : ':' + k.port) } }); }    try { w = new WebSocket(wurl, { handshakeTimeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0 (ACURA Signal Doctor; acurahamradio.org)', Origin: 'http://' + k.host + (k.port === 80 ? '' : ':' + k.port) } }); }  const paths = ['/kiwi/' + Math.floor(Date.now() / 1000) + '/SND', '/' + Math.floor(Date.now() / 1000) + '/SND', '/ws/kiwi/' + Math.floor(Date.now() / 1000) + '/SND'];    try { me = new WebSocket(url, { handshakeTimeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0 (ACURA Signal Doctor; acurahamradio.org)', Origin: 'http://' + k.host + (k.port === 80 ? '' : ':' + k.port) } }); }    try { w = new WebSocket(wurl, { handshakeTimeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0 (ACURA Signal Doctor; acurahamradio.org)', Origin: 'http://' + k.host + (k.port === 80 ? '' : ':' + k.port) } }); }    job.state = state; if (msg) job.msg = msg;
+    noteHost(k.host + ':' + k.port, state === 'done');const ipLog = new Map();
+const hostStats = new Map(); // host:port -> {ok, bad, t} so receivers that keep failing sink down the list
+function noteHost(h, ok) { const s = hostStats.get(h) || { ok: 0, bad: 0, t: 0 }; if (ok) s.ok++; else s.bad++; s.t = Date.now(); hostStats.set(h, s); }    let hs = hostStats.get(k.host + ':' + k.port);
+    if (hs && Date.now() - hs.t > 12 * 3600 * 1000) { hostStats.delete(k.host + ':' + k.port); hs = null; }
+    if (hs && hs.bad >= 2 && hs.ok === 0) continue;
+    const rel = hs ? hs.ok * 12 - hs.bad * 20 : 0;
+    c.push({ name: k.name, url: 'http://' + k.host + ':' + k.port, km: Math.round(d), deg: Math.round(bearing(lat, lon, k.lat, k.lon)), free: k.max - k.users, snr, score: snr * 3 - distPenalty + rel, worked: hs ? hs.ok : 0 });/*
  * ACURA Signal Doctor - recorder
  * ------------------------------
  * Records a ham's own transmission on a public KiwiSDR receiver far away, so
