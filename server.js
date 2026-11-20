@@ -365,6 +365,10 @@ const server = http.createServer((req, res) => {
     if (url === '/arc/data') return send(200, pw.testData(q.get('call')));
     return send(404, { ok: false });
   }
+  if (url.indexOf('/sd/') === 0) {
+    require('./signaldoctor.js').handle(req, res, ALLOW_ORIGIN, (k) => require('./pathwatch.js').okSecret(k));
+    return;
+  }
   if (url === '/' || url === '/health') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('ACURA MeshCore Hub is running. Observers: ' + observers.size + '. Packets buffered: ' + packets.length + '. LetsMesh feed: ' + (lmStatus.ok ? 'OK' : 'not yet') + (lmStatus.err ? ' (' + lmStatus.err + ')' : '') + '.\n');
