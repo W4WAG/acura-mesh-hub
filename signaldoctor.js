@@ -192,75 +192,102 @@ function startJob(k, opt) {
   const hc = isCarrier ? 2500 : (lsb ? -50 : 5400);
   job.info = { mod, tune: tuneK, carrier: isCarrier };
 
-  const url = 'ws://' + k.host + ':' + k.port + '/' + Math.floor(Date.now() / 1000) + '/SND';
-  let ws;
-  try { ws = new WebSocket(url, { handshakeTimeout: 12000, headers: { 'User-Agent': 'ACURA-Signal-Doctor' } }); }
-  catch (e) { job.state = 'error'; job.msg = 'Could not reach that receiver.'; return job; }
-  job.ws = ws;
-  let ka = null, endT = null, adpcm = null;
+  job.log = [];
+  const log = (m) => { if (job.log.length < 40) job.log.push(((Date.now() - job.created) / 1000).toFixed(1) + ' ' + String(m).slice(0, 160)); };
+  const paths = ['/' + Math.floor(Date.now() / 1000) + '/SND', '/ws/kiwi/' + Math.floor(Date.now() / 1000) + '/SND'];
+  let ws = null, ka = null, endT = null, adpcm = null, attempt = 0, waitT = null;
 
-  const send = (s) => { try { ws.send(s); } catch (e) { /* closed */ } };
+  const send = (m) => { try { ws.send(m); } catch (e) { /* closed */ } };
   const finish = (state, msg) => {
     if (job.state === 'done' || job.state === 'error') return;
     job.state = state; if (msg) job.msg = msg;
-    clearInterval(ka); clearTimeout(endT);
+    log('finish ' + state + ' ' + (msg || ''));
+    clearInterval(ka); clearTimeout(endT); clearTimeout(waitT);
     try { ws.close(); } catch (e) { /* ignore */ }
   };
 
-  ws.on('open', () => {
-    send('SET auth t=kiwi p=');
-    send('SET ident_user=ACURA_Signal_Doctor_' + String(opt.call || '').replace(/[^A-Z0-9]/gi, '').slice(0, 10));
-    send('SET mod=' + mod + ' low_cut=' + lc + ' high_cut=' + hc + ' freq=' + tuneK.toFixed(3));
-    send('SET agc=1 hang=0 thresh=-110 slope=6 decay=1000 manGain=50');
-    send('SET squelch=0 max=0');
-    send('SET compression=0');
-    ka = setInterval(() => send('SET keepalive'), 5000);
-  });
+  function connect() {
+    const url = 'ws://' + k.host + ':' + k.port + paths[attempt];
+    log('connect ' + paths[attempt].replace(/\d{6,}/, 'T'));
+    let me;
+    try { me = new WebSocket(url, { handshakeTimeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0 (ACURA Signal Doctor; acurahamradio.org)' } }); }
+    catch (e) { log('ctor ' + e.message); return retry('Could not reach that receiver.'); }
+    ws = me; job.ws = me;
 
-  ws.on('message', (data, isBinary) => {
-    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    const tag = buf.slice(0, 3).toString('latin1');
-    if (tag === 'MSG') {
-      const s = buf.slice(4).toString('utf8');
-      for (const kv of s.split(' ')) {
-        const [key, val] = kv.split('=');
-        if (key === 'audio_rate') send('SET AR OK in=' + parseInt(val, 10) + ' out=44100');
-        else if (key === 'sample_rate') { const v = parseFloat(val); if (v > 1000) job.fs = v; }
-        else if (key === 'too_busy') finish('error', 'That receiver is full right now. Pick another one.');
-        else if (key === 'badp') finish('error', 'That receiver needs a password. Pick another one.');
-        else if (key === 'down') finish('error', 'That receiver is down right now. Pick another one.');
-        else if (key === 'inactivity_timeout' || key === 'kick') { /* ignore */ }
+    me.on('open', () => {
+      log('open');
+      send('SET auth t=kiwi p=');
+      send('SET ident_user=ACURA_Signal_Doctor_' + String(opt.call || '').replace(/[^A-Z0-9]/gi, '').slice(0, 10));
+      send('SET mod=' + mod + ' low_cut=' + lc + ' high_cut=' + hc + ' freq=' + tuneK.toFixed(3));
+      send('SET agc=1 hang=0 thresh=-110 slope=6 decay=1000 manGain=50');
+      send('SET squelch=0 max=0');
+      send('SET compression=0');
+      clearInterval(ka); ka = setInterval(() => send('SET keepalive'), 5000);
+      clearTimeout(waitT);
+      waitT = setTimeout(() => { if (job.state === 'connecting') { log('no audio yet'); retry('That receiver did not send any audio. Pick another one.'); } }, 8000);
+    });
+
+    me.on('message', (data) => {
+      if (me !== ws) return;
+      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+      const tag = buf.slice(0, 3).toString('latin1');
+      if (tag === 'MSG') {
+        const str = buf.slice(4).toString('utf8');
+        if (job.log.length < 30 && !/^(stats_cb|ext_client_init|load_cfg|load_dxcfg|load_adm|client_public_ip|rx_chans|chan_no_pwd|badp=0|version_maj|version_min|debian_ver|is_admin|is_local|kiwi_up)/.test(str)) log('MSG ' + str);
+        for (const kv of str.split(' ')) {
+          const [key, val] = kv.split('=');
+          if (key === 'audio_rate') send('SET AR OK in=' + parseInt(val, 10) + ' out=44100');
+          else if (key === 'sample_rate') { const v = parseFloat(val); if (v > 1000) job.fs = v; }
+          else if (key === 'too_busy') finish('error', 'That receiver is full right now. Pick another one.');
+          else if (key === 'badp' && val !== '0') finish('error', 'That receiver needs a password. Pick another one.');
+          else if (key === 'down') finish('error', 'That receiver is down right now. Pick another one.');
+        }
+        return;
       }
-      return;
-    }
-    if (tag !== 'SND' || buf.length < 11) return;
-    const flags = buf[3];
-    const smeter = buf.readUInt16BE(8);
-    const dbm = 0.1 * smeter - 127;
-    let pcm;
-    const body = buf.slice(10);
-    if (flags & 0x10) { adpcm = adpcm || imaDecoder(); pcm = adpcm(body); }
-    else {
-      if (!job.endian) job.endian = pickEndian(body);
-      pcm = new Int16Array(Math.floor(body.length / 2));
-      for (let i = 0; i < pcm.length; i++) pcm[i] = job.endian === 'BE' ? body.readInt16BE(2 * i) : body.readInt16LE(2 * i);
-    }
-    if (job.state === 'connecting') {
-      job.state = 'recording'; job.recStart = Date.now();
-      endT = setTimeout(() => finish('done'), REC_SECS * 1000 + 300);
-    }
-    if (job.state !== 'recording') return;
-    job.chunks.push(pcm); job.nsamp += pcm.length;
-    job.sm.push([+((Date.now() - job.recStart) / 1000).toFixed(2), +dbm.toFixed(1)]);
-    if (job.nsamp > job.fs * (REC_SECS + 2)) finish('done');
-  });
+      if (tag !== 'SND' || buf.length < 11) { if (job.log.length < 30) log('frame ' + tag.replace(/[^ -~]/g, '?') + ' len ' + buf.length); return; }
+      const flags = buf[3];
+      const smeter = buf.readUInt16BE(8);
+      const dbm = 0.1 * smeter - 127;
+      let pcm;
+      const body = buf.slice(10);
+      if (flags & 0x10) { adpcm = adpcm || imaDecoder(); pcm = adpcm(body); }
+      else {
+        if (!job.endian) job.endian = pickEndian(body);
+        pcm = new Int16Array(Math.floor(body.length / 2));
+        for (let i = 0; i < pcm.length; i++) pcm[i] = job.endian === 'BE' ? body.readInt16BE(2 * i) : body.readInt16LE(2 * i);
+      }
+      if (job.state === 'connecting') {
+        log('audio flags ' + flags + ' bytes ' + body.length);
+        clearTimeout(waitT);
+        job.state = 'recording'; job.recStart = Date.now();
+        endT = setTimeout(() => finish('done'), REC_SECS * 1000 + 300);
+      }
+      if (job.state !== 'recording') return;
+      job.chunks.push(pcm); job.nsamp += pcm.length;
+      job.sm.push([+((Date.now() - job.recStart) / 1000).toFixed(2), +dbm.toFixed(1)]);
+      if (job.nsamp > job.fs * (REC_SECS + 2)) finish('done');
+    });
 
-  ws.on('error', (e) => finish('error', 'Could not connect to that receiver (' + e.message.slice(0, 60) + '). Pick another one.'));
-  ws.on('close', () => {
-    if (job.state === 'recording') finish(job.nsamp > job.fs * 8 ? 'done' : 'error', job.nsamp > job.fs * 8 ? '' : 'The receiver hung up early. Pick another one.');
-    else if (job.state === 'connecting') finish('error', 'The receiver closed the connection. Pick another one.');
-  });
-  setTimeout(() => { if (job.state === 'connecting') finish('error', 'That receiver did not answer. Pick another one.'); }, 15000);
+    me.on('error', (e) => { log('error ' + e.message); if (me === ws) retry('Could not connect to that receiver. Pick another one.'); });
+    me.on('close', (code, reason) => {
+      log('close ' + code + ' ' + String(reason || '').slice(0, 60));
+      if (me !== ws) return;
+      if (job.state === 'recording') finish(job.nsamp > job.fs * 8 ? 'done' : 'error', job.nsamp > job.fs * 8 ? '' : 'The receiver hung up early. Pick another one.');
+      else if (job.state === 'connecting') retry('The receiver closed the connection. Pick another one.');
+    });
+  }
+
+  function retry(msg) {
+    if (job.state !== 'connecting') return;
+    clearInterval(ka); clearTimeout(waitT);
+    const old = ws; ws = null;
+    try { old && old.close(); } catch (e) { /* ignore */ }
+    if (attempt + 1 < paths.length) { attempt++; setTimeout(connect, 300); }
+    else finish('error', msg);
+  }
+
+  connect();
+  setTimeout(() => { if (job.state === 'connecting') finish('error', 'That receiver did not answer. Pick another one.'); }, 30000);
   return job;
 }
 
@@ -316,7 +343,7 @@ async function handle(req, res, allowOrigin, okSecret) {
       const j = jobs.get(q.get('id') || '');
       if (!j) return send(404, { ok: false, msg: 'That test has expired.' });
       const el = j.recStart ? (Date.now() - j.recStart) / 1000 : 0;
-      return send(200, { ok: true, state: j.state, msg: j.msg, elapsed: +el.toFixed(1), secs: REC_SECS, fs: j.fs, samples: j.nsamp, sm: j.state === 'done' ? j.sm : j.sm.slice(-1), kiwi: j.kiwi, info: j.info });
+      return send(200, { ok: true, state: j.state, msg: j.msg, elapsed: +el.toFixed(1), secs: REC_SECS, fs: j.fs, samples: j.nsamp, sm: j.state === 'done' ? j.sm : j.sm.slice(-1), kiwi: j.kiwi, info: j.info, log: q.get('log') ? j.log : undefined });
     }
     if (u.pathname === '/sd/wav') {
       const j = jobs.get(q.get('id') || '');
