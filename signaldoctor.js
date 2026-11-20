@@ -217,7 +217,7 @@ function startJob(k, opt) {
 
     me.on('open', () => {
       log('open'); openWf();
-      send('SET auth t=kiwi p=');
+      send('SERVER DE CLIENT ACURA_Signal_Doctor SND'); send('SET auth t=kiwi p=');
       send('SET ident_user=ACURA_Signal_Doctor_' + String(opt.call || '').replace(/[^A-Z0-9]/gi, '').slice(0, 10));
       send('SET mod=' + mod + ' low_cut=' + lc + ' high_cut=' + hc + ' freq=' + tuneK.toFixed(3));
       send('SET agc=1 hang=0 thresh=-110 slope=6 decay=1000 manGain=50');
@@ -290,7 +290,7 @@ function startJob(k, opt) {
     const wsend = (m) => { try { w.send(m); } catch (e) { /* closed */ } };
     w.on('open', () => {
       log('wf open');
-      wsend('SET auth t=kiwi p=');
+      wsend('SERVER DE CLIENT ACURA_Signal_Doctor W/F'); wsend('SET auth t=kiwi p=');
       wsend('SET zoom=0 cf=' + (k.hi / 2000).toFixed(3));
       wsend('SET maxdb=0 mindb=-100');
       wsend('SET wf_speed=1');
