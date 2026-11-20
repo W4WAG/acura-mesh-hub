@@ -194,8 +194,8 @@ function startJob(k, opt) {
 
   job.log = [];
   const log = (m) => { if (job.log.length < 40) job.log.push(((Date.now() - job.created) / 1000).toFixed(1) + ' ' + String(m).slice(0, 160)); };
-  const paths = ['/ws/kiwi/' + Math.floor(Date.now() / 1000) + '/SND', '/' + Math.floor(Date.now() / 1000) + '/SND'];
-  let ws = null, ka = null, endT = null, adpcm = null, attempt = 0, waitT = null;
+  const paths = ['/kiwi/' + Math.floor(Date.now() / 1000) + '/SND', '/' + Math.floor(Date.now() / 1000) + '/SND', '/ws/kiwi/' + Math.floor(Date.now() / 1000) + '/SND'];
+  let ws = null, ka = null, endT = null, adpcm = null, attempt = Math.min(2, Math.max(0, parseInt(opt.p || '0', 10) || 0)), waitT = null;
 
   const send = (m) => { try { ws.send(m); } catch (e) { /* closed */ } };
   const finish = (state, msg) => {
@@ -222,7 +222,7 @@ function startJob(k, opt) {
       send('SET agc=1 hang=0 thresh=-110 slope=6 decay=1000 manGain=50');
       send('SET squelch=0 max=0');
       send('SET compression=0');
-      clearInterval(ka); ka = setInterval(() => send('SET keepalive'), 5000);
+      clearInterval(ka); ka = setInterval(() => send('SET keepalive'), 1000);
       clearTimeout(waitT);
       waitT = setTimeout(() => { if (job.state === 'connecting') { log('no audio yet'); retry('That receiver did not send any audio. Pick another one.'); } }, 8000);
     });
@@ -336,7 +336,7 @@ async function handle(req, res, allowOrigin, okSecret) {
       if (log.length >= PER_HOUR) return send(429, { ok: false, msg: 'You have run ' + PER_HOUR + ' tests this hour. Please try again later.' });
       log.push(Date.now()); ipLog.set(ip, log);
       const mode = q.get('mode') === 'carrier' ? 'carrier' : 'voice';
-      const job = startJob(k, { f, mode, call: q.get('call') });
+      const job = startJob(k, { f, mode, call: q.get('call'), p: q.get('p') });
       return send(200, { ok: true, id: job.id, secs: REC_SECS, kiwi: job.kiwi, info: job.info });
     }
     if (u.pathname === '/sd/job') {
