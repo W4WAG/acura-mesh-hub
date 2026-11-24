@@ -12,6 +12,7 @@
  *   GET  /live                    JSON summary for the website
  *   GET  /pw/stats, /pw/open, /pw/world   Path Watch status and world map (see pathwatch.js)
  *   GET  /arc/start, /arc/data    worldwide Antenna Report Card tests (key required)
+ *   GET  /aprs/near, /aprs/stats  live APRS stations near any location (see aprs.js)
  *   GET  /                        health check
  *
  * Also polls LetsMesh (api.letsmesh.net) for the region, so the page has data
@@ -365,6 +366,10 @@ const server = http.createServer((req, res) => {
     if (url === '/arc/data') return send(200, pw.testData(q.get('call')));
     return send(404, { ok: false });
   }
+  if (url.indexOf('/aprs/') === 0) {
+    require('./aprs.js').handle(req, res, ALLOW_ORIGIN);
+    return;
+  }
   if (url.indexOf('/sd/') === 0) {
     require('./signaldoctor.js').handle(req, res, ALLOW_ORIGIN, (k) => require('./pathwatch.js').okSecret(k));
     return;
@@ -432,6 +437,7 @@ if (require.main === module) {
   startBroker();
 // OFF: LetsMesh API needs permission (401).   startLetsMesh();
   require('./pathwatch.js').start();
+  require('./aprs.js').start();
   server.listen(PORT, () => console.log('ACURA MeshCore Hub listening on', PORT, '(region ' + REGION + ')'));
 }
 
